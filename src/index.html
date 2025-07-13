@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python Script Manager</title>
+    <style>
+        :root {
+            --primary: #3498db;
+            --success: #2ecc71;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+            --dark: #34495e;
+            --light: #f8f9fa;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background-color: #f5f7fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--primary), #2980b9);
+            color: white;
+            padding: 20px 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        
+        header h1 {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn:hover {
+            background-color: #2980b9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        .btn-success {
+            background-color: var(--success);
+        }
+        
+        .btn-success:hover {
+            background-color: #27ae60;
+        }
+        
+        .btn-danger {
+            background-color: var(--danger);
+        }
+        
+        .btn-danger:hover {
+            background-color: #c0392b;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            overflow: hidden;
+            transition: transform 0.3s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .card-header {
+            padding: 15px 20px;
+            background-color: var(--light);
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .card-body {
+            padding: 20px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-running {
+            background-color: var(--success);
+            box-shadow: 0 0 8px var(--success);
+        }
+        
+        .status-pending {
+            background-color: var(--warning);
+        }
+        
+        .status-completed {
+            background-color: var(--primary);
+        }
+        
+        .status-failed {
+            background-color: var(--danger);
+        }
+        
+        .task-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .task-item {
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .task-item:hover {
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        }
+        
+        .task-info {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: white;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .modal-header {
+            padding: 20px;
+            background: var(--dark);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex-grow: 1;
+        }
+        
+        .modal-footer {
+            padding: 15px 20px;
+            background: var(--light);
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--dark);
+        }
+        
+        input, select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        
+        textarea {
+            min-height: 200px;
+            font-family: monospace;
+        }
+        
+        .schedule-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .schedule-option {
+            border: 2px solid #eee;
+            padding: 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .schedule-option.selected {
+            border-color: var(--primary);
+            background-color: rgba(52, 152, 219, 0.05);
+        }
+        
+        .schedule-option:hover {
+            border-color: #ddd;
+        }
+        
+        .output-panel {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        
+        .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+        }
+        
+        .last-run {
+            font-size: 13px;
+            color: #7f8c8d;
+        }
+        
+        .next-run {
+            font-size: 13px;
+            color: var(--primary);
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <h1>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+                        <polyline points="13 2 13 9 20 9"></polyline>
+                    </svg>
+                    Python Script Manager
+                </h1>
+                <button id="new-task-btn" class="btn btn-success">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    New Task
+                </button>
+            </div>
+        </div>
+    </header>
+    
+    <div class="container">
+        <div class="task-grid" id="tasks-container">
+            <!-- Tasks will be loaded here dynamically -->
+        </div>
+    </div>
+    
+    <!-- Task Modal -->
+    <div class="modal" id="task-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">New Task</h2>
+                <button class="close-btn" id="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="task-form">
+                    <input type="hidden" id="task-id">
+                    
+                    <div class="form-group">
+                        <label for="task-name">Task Name</label>
+                        <input type="text" id="task-name" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Schedule Type</label>
+                        <div class="schedule-options">
+                            <div class="schedule-option" data-type="once">
+                                <h3>Run Once</h3>
+                                <p>Execute the script immediately</p>
+                            </div>
+                            <div class="schedule-option" data-type="interval">
+                                <h3>Interval</h3>
+                                <p>Run repeatedly at fixed intervals</p>
+                                <div id="interval-options" style="display: none; margin-top: 10px;">
+                                    <label for="interval-seconds">Seconds:</label>
+                                    <input type="number" id="interval-seconds" min="1" value="60">
+                                </div>
+                            </div>
+                            <div class="schedule-option" data-type="daily">
+                                <h3>Daily</h3>
+                                <p>Run at specific time each day</p>
+                                <div id="daily-options" style="display: none; margin-top: 10px;">
+                                    <label for="daily-hour">Time:</label>
+                                    <input type="time" id="daily-time" value="09:00">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="script-content">Python Script</label>
+                        <textarea id="script-content" placeholder="# Enter your Python script here" required></textarea>
+                    </div>
+                    
+                    <div id="output-container" style="display: none;">
+                        <label>Last Execution Output</label>
+                        <div class="output-panel" id="output-panel"></div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-danger" id="delete-btn" style="display: none;">Delete</button>
+                <button type="button" class="btn" id="cancel-btn">Cancel</button>
+                <button type="submit" form="task-form" class="btn btn-success">Save Task</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // DOM Elements
+        const tasksContainer = document.getElementById('tasks-container');
+        const taskModal = document.getElementById('task-modal');
+        const modalTitle = document.getElementById('modal-title');
+        const taskForm = document.getElementById('task-form');
+        const taskIdInput = document.getElementById('task-id');
+        const taskNameInput = document.getElementById('task-name');
+        const scriptContentInput = document.getElementById('script-content');
+        const outputPanel = document.getElementById('output-panel');
+        const outputContainer = document.getElementById('output-container');
+        const deleteBtn = document.getElementById('delete-btn');
+        const newTaskBtn = document.getElementById('new-task-btn');
+        const closeModalBtn = document.getElementById('close-modal');
+        const cancelBtn = document.getElementById('cancel-btn');
+        
+        // State
+        let currentScheduleType = 'once';
+        let tasks = [];
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchTasks();
+            setupEventListeners();
+        });
+        
+        // Event Listeners
+        function setupEventListeners() {
+            // Schedule type selection
+            document.querySelectorAll('.schedule-option').forEach(option => {
+                option.addEventListener('click', () => {
+                    document.querySelectorAll('.schedule-option').forEach(opt => {
+                        opt.classList.remove('selected');
+                    });
+                    option.classList.add('selected');
+                    currentScheduleType = option.dataset.type;
+                    
+                    // Hide all options
+                    document.getElementById('interval-options').style.display = 'none';
+                    document.getElementById('daily-options').style.display = 'none';
+                    
+                    // Show selected options
+                    if (currentScheduleType === 'interval') {
+                        document.getElementById('interval-options').style.display = 'block';
+                    } else if (currentScheduleType === 'daily') {
+                        document.getElementById('daily-options').style.display = 'block';
+                    }
+                });
+            });
+            
+            // Modal controls
+            newTaskBtn.addEventListener('click', () => openModal());
+            closeModalBtn.addEventListener('click', () => closeModal());
+            cancelBtn.addEventListener('click', () => closeModal());
+            
+            // Form submission
+            taskForm.addEventListener('submit', handleFormSubmit);
+            
+            // Delete task
+            deleteBtn.addEventListener('click', deleteTask);
+        }
+        
+        // Fetch tasks from API
+        async function fetchTasks() {
+            try {
+                const response = await fetch('/tasks');
+                tasks = await response.json();
+                renderTasks();
+            } catch (error) {
+                console.error('Error fetching tasks:', error);
+            }
+        }
+        
+        // Render tasks in the UI
+        function renderTasks() {
+            tasksContainer.innerHTML = '';
+            
+            if (tasks.length === 0) {
+                tasksContainer.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #7f8c8d;">
+                        <h3>No tasks created yet</h3>
+                        <p>Click "New Task" to create your first scheduled Python script</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            tasks.forEach(task => {
+                const statusClass = `status-${task.status.toLowerCase()}`;
+                const lastRun = task.last_run ? 
+                    new Date(task.last_run).toLocaleString() : 'Never run';
+                
+                let nextRunInfo = '';
+                if (task.schedule === 'Once') {
+                    nextRunInfo = '<div class="last-run">One-time execution</div>';
+                } else if (task.schedule.Interval) {
+                    const interval = task.schedule.Interval;
+                    const nextRun = task.last_run ? 
+                        new Date(new Date(task.last_run).getTime() + interval * 1000) : 
+                        new Date();
+                    nextRunInfo = `<div class="next-run">Next run: ${nextRun.toLocaleTimeString()}</div>`;
+                } else if (task.schedule.Daily) {
+                    const { hour, minute } = task.schedule.Daily;
+                    const now = new Date();
+                    const nextRun = new Date(
+                        now.getFullYear(),
+                        now.getMonth(),
+                        now.getDate() + (now.getHours() > hour || (now.getHours() === hour && now.getMinutes() >= minute) ? 1 : 0),
+                        hour,
+                        minute
+                    );
+                    nextRunInfo = `<div class="next-run">Next run: ${nextRun.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>`;
+                }
+                
+                const taskCard = document.createElement('div');
+                taskCard.className = 'card task-item';
+                taskCard.dataset.id = task.id;
+                taskCard.innerHTML = `
+                    <div class="card-header">
+                        <h3>${task.name}</h3>
+                        <span class="status-indicator ${statusClass}"></span>
+                    </div>
+                    <div class="card-body">
+                        <div>${task.schedule === 'Once' ? 'One-time execution' : 
+                            task.schedule.Interval ? `Every ${task.schedule.Interval} seconds` : 
+                            `Daily at ${task.schedule.Daily.hour}:${task.schedule.Daily.minute.toString().padStart(2, '0')}`}</div>
+                        <div class="task-info">
+                            <div class="last-run">Last run: ${lastRun}</div>
+                            ${nextRunInfo}
+                        </div>
+                    </div>
+                `;
+                
+                taskCard.addEventListener('click', () => openModal(task.id));
+                tasksContainer.appendChild(taskCard);
+            });
+        }
+        
+        // Open modal for creating/editing task
+        function openModal(taskId = null) {
+            outputContainer.style.display = 'none';
+            
+            if (taskId) {
+                // Editing existing task
+                const task = tasks.find(t => t.id === taskId);
+                if (!task) return;
+                
+                modalTitle.textContent = 'Edit Task';
+                taskIdInput.value = task.id;
+                taskNameInput.value = task.name;
+                scriptContentInput.value = task.script_content;
+                
+                // Set schedule type
+                if (task.schedule === 'Once') {
+                    currentScheduleType = 'once';
+                } else if (task.schedule.Interval) {
+                    currentScheduleType = 'interval';
+                    document.getElementById('interval-seconds').value = task.schedule.Interval;
+                } else if (task.schedule.Daily) {
+                    currentScheduleType = 'daily';
+                    const { hour, minute } = task.schedule.Daily;
+                    document.getElementById('daily-time').value = 
+                        `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                }
+                
+                // Show output if exists
+                if (task.output) {
+                    outputPanel.textContent = task.output;
+                    outputContainer.style.display = 'block';
+                }
+                
+                deleteBtn.style.display = 'block';
+            } else {
+                // Creating new task
+                modalTitle.textContent = 'Create New Task';
+                taskIdInput.value = '';
+                taskNameInput.value = '';
+                scriptContentInput.value = '';
+                currentScheduleType = 'once';
+                document.getElementById('interval-seconds').value = '60';
+                document.getElementById('daily-time').value = '09:00';
+                deleteBtn.style.display = 'none';
+            }
+            
+            // Update UI for schedule type
+            document.querySelectorAll('.schedule-option').forEach(opt => {
+                opt.classList.remove('selected');
+                if (opt.dataset.type === currentScheduleType) {
+                    opt.classList.add('selected');
+                }
+            });
+            
+            document.getElementById('interval-options').style.display = 
+                currentScheduleType === 'interval' ? 'block' : 'none';
+            document.getElementById('daily-options').style.display = 
+                currentScheduleType === 'daily' ? 'block' : 'none';
+            
+            taskModal.style.display = 'flex';
+        }
+        
+        // Close modal
+        function closeModal() {
+            taskModal.style.display = 'none';
+        }
+        
+        // Handle form submission
+        async function handleFormSubmit(e) {
+            e.preventDefault();
+            
+            const taskId = taskIdInput.value;
+            const name = taskNameInput.value;
+            const scriptContent = scriptContentInput.value;
+            
+            // Get schedule based on selected type
+            let schedule;
+            if (currentScheduleType === 'once') {
+                schedule = 'Once';
+            } else if (currentScheduleType === 'interval') {
+                const seconds = parseInt(document.getElementById('interval-seconds').value);
+                schedule = { Interval: seconds };
+            } else if (currentScheduleType === 'daily') {
+                const timeValue = document.getElementById('daily-time').value;
+                const [hour, minute] = timeValue.split(':').map(Number);
+                schedule = { Daily: { hour, minute } };
+            }
+            
+            if (taskId) {
+                // Update existing task
+                await updateTaskApi(taskId, name, schedule, scriptContent);
+            } else {
+                // Create new task
+                await createTaskApi(name, schedule, scriptContent);
+            }
+            
+            closeModal();
+            await fetchTasks();
+        }
+        
+        // Create task via API
+        async function createTaskApi(name, schedule, scriptContent) {
+            try {
+                const response = await fetch('/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        name, 
+                        schedule,
+                        script_content: scriptContent
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to create task');
+                }
+            } catch (error) {
+                console.error('Error creating task:', error);
+                alert('Error creating task: ' + error.message);
+            }
+        }
+        
+        // Update task via API
+        async function updateTaskApi(taskId, name, schedule, scriptContent) {
+            try {
+                const response = await fetch(`/tasks/${taskId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        name, 
+                        schedule,
+                        script_content: scriptContent
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to update task');
+                }
+            } catch (error) {
+                console.error('Error updating task:', error);
+                alert('Error updating task: ' + error.message);
+            }
+        }
+        
+        // Delete task
+        async function deleteTask() {
+            const taskId = taskIdInput.value;
+            if (!taskId || !confirm('Are you sure you want to delete this task?')) return;
+            
+            try {
+                const response = await fetch(`/tasks/${taskId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to delete task');
+                }
+                
+                closeModal();
+                await fetchTasks();
+            } catch (error) {
+                console.error('Error deleting task:', error);
+                alert('Error deleting task: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
