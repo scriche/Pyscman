@@ -1,8 +1,8 @@
 use actix_files::Files;
 use actix_web::{
-    delete, get, post, put, web, App, HttpResponse, HttpServer, Responder,
+    cookie::time::Date, delete, get, post, put, web, App, HttpResponse, HttpServer, Responder
 };
-use chrono::{DateTime, Local, Timelike};
+use chrono::{DateTime, Local, Timelike, Duration};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -10,9 +10,9 @@ use std::{
     path::Path,
     process::Command,
     sync::{Arc, Mutex},
-    thread,
-    time::{Duration, SystemTime},
+    thread
 };
+use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
 // Task scheduling types
@@ -39,14 +39,14 @@ struct ScriptTask {
     name: String,
     script_content: String,
     schedule: ScheduleType,
-    last_run: Option<SystemTime>,
+    last_run: Option<DateTime<Local>>,
     status: TaskStatus,
     output: Option<String>,
 }
 
 // App state
 struct AppState {
-    tasks: Arc<Mutex<HashMap<String, ScriptTask>>>,
+    tasks: Mutex<HashMap<String, ScriptTask>>,
 }
 
 // Create task request
@@ -65,8 +65,10 @@ struct UpdateTaskRequest {
     schedule: Option<ScheduleType>,
 }
 
+const TASKS_FILE: &str = "tasks.json";
+
 // API endpoints
-#[post("/tasks")]
+#[post("/api/tasks")]
 async fn create_task(
     data: web::Data<AppState>,
     task_req: web::Json<CreateTaskRequest>,
@@ -84,17 +86,27 @@ async fn create_task(
 
     data.tasks.lock().unwrap().insert(id.clone(), new_task);
 
+    // Save the new task to file
+    save_tasks_to_file(&data.tasks.lock().unwrap());
+    
     HttpResponse::Created().json(id)
 }
 
-#[get("/tasks")]
+#[get("/api/tasks")]
 async fn get_tasks(data: web::Data<AppState>) -> impl Responder {
-    let tasks = data.tasks.lock().unwrap();
+    println!("Fetching all tasks");
+    let tasks = match data.tasks.lock() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Failed to lock tasks: {e}");
+            return HttpResponse::InternalServerError().body("Lock poisoned");
+        }
+    };
     let task_list: Vec<ScriptTask> = tasks.values().cloned().collect();
     HttpResponse::Ok().json(task_list)
 }
 
-#[get("/tasks/{id}")]
+#[get("/api/tasks/{id}")]
 async fn get_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
     let tasks = data.tasks.lock().unwrap();
     match tasks.get(&*id) {
@@ -103,7 +115,7 @@ async fn get_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Resp
     }
 }
 
-#[put("/tasks/{id}")]
+#[put("/api/tasks/{id}")]
 async fn update_task(
     data: web::Data<AppState>,
     id: web::Path<String>,
@@ -111,7 +123,7 @@ async fn update_task(
 ) -> impl Responder {
     let mut tasks = data.tasks.lock().unwrap();
     let task_id = id.into_inner();
-    
+
     if let Some(task) = tasks.get_mut(&task_id) {
         if let Some(name) = &update_req.name {
             task.name = name.clone();
@@ -122,21 +134,58 @@ async fn update_task(
         if let Some(schedule) = &update_req.schedule {
             task.schedule = schedule.clone();
         }
-        HttpResponse::Ok().json(task.clone())
+
+        let updated_task = task.clone();
+        let _ = task; // Ends the mutable borrow explicitly
+
+        // Save the updated task
+        save_tasks_to_file(&tasks);
+
+        HttpResponse::Ok().json(updated_task)
+    } else {
+        HttpResponse::NotFound().body("Task not found")
+    }
+}
+#[delete("/api/tasks/{id}")]
+async fn delete_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
+    let mut tasks = data.tasks.lock().unwrap();
+    let task_id = id.into_inner();
+
+    // Remove script file if it exists
+    let script_path = format!("scripts/{}.py", task_id);
+    if Path::new(&script_path).exists() {
+        if let Err(e) = fs::remove_file(script_path) {
+            eprintln!("Failed to delete script file: {}", e);
+        }
+    }
+
+    if tasks.remove(&task_id).is_some() {
+        save_tasks_to_file(&tasks);
+        HttpResponse::Ok().body("Task deleted")
     } else {
         HttpResponse::NotFound().body("Task not found")
     }
 }
 
-#[delete("/tasks/{id}")]
-async fn delete_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
-    let mut tasks = data.tasks.lock().unwrap();
-    let task_id = id.into_inner();
-    
-    if tasks.remove(&task_id).is_some() {
-        HttpResponse::Ok().body("Task deleted")
+fn save_tasks_to_file(tasks: &HashMap<String, ScriptTask>) {
+    if let Ok(json) = serde_json::to_string(tasks) {
+        if let Err(e) = fs::write(TASKS_FILE, json) {
+            eprintln!("Failed to write tasks to file: {}", e);
+        }
+    }
+}
+
+fn load_tasks_from_file() -> HashMap<String, ScriptTask> {
+    if let Ok(contents) = fs::read_to_string(TASKS_FILE) {
+        match serde_json::from_str(&contents) {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                eprintln!("Failed to parse tasks file: {}", e);
+                HashMap::new()
+            }
+        }
     } else {
-        HttpResponse::NotFound().body("Task not found")
+        HashMap::new()
     }
 }
 
@@ -167,7 +216,7 @@ fn run_python_script(content: &str, task_id: &str) -> String {
 }
 
 // Scheduler thread
-fn start_scheduler(data: Arc<AppState>) {
+fn start_scheduler(data: Arc<web::Data<AppState>>) {
     thread::spawn(move || {
         loop {
             let now = Local::now();
@@ -178,9 +227,9 @@ fn start_scheduler(data: Arc<AppState>) {
                     ScheduleType::Once => task.last_run.is_none(),
                     ScheduleType::Interval(secs) => task
                         .last_run
-                        .map_or(true, |t| t.elapsed().unwrap() >= Duration::from_secs(secs)),
+                        .map_or(true, |t| Local::now().signed_duration_since(t) >= Duration::seconds(secs as i64)),
                     ScheduleType::Daily { hour, minute } => {
-                        let scheduled_time = (now.hour() == hour && now.minute() == minute);
+                        let scheduled_time = now.hour() == hour && now.minute() == minute;
                         let never_run = task.last_run.is_none();
                         let new_day = task.last_run.map_or(false, |t| {
                             let last_run: DateTime<Local> = t.into();
@@ -204,7 +253,7 @@ fn start_scheduler(data: Arc<AppState>) {
                         // Update task status and output
                         let mut tasks = data_clone.tasks.lock().unwrap();
                         if let Some(task) = tasks.get_mut(&task_id) {
-                            task.last_run = Some(SystemTime::now());
+                            task.last_run = Some(Local::now());
                             task.status = if output.contains("ERROR") {
                                 TaskStatus::Failed
                             } else {
@@ -218,7 +267,7 @@ fn start_scheduler(data: Arc<AppState>) {
 
             // Release lock before sleeping
             drop(tasks);
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(StdDuration::from_secs(1)); // Check every second
         }
     });
 }
@@ -238,26 +287,27 @@ async fn main() -> std::io::Result<()> {
     }
     
     // Initialize app state
-    let app_state = Arc::new(AppState {
-        tasks: Arc::new(Mutex::new(HashMap::new())),
+    let app_state = web::Data::new(AppState {
+        tasks: Mutex::new(load_tasks_from_file()),
     });
 
     // Start scheduler thread
-    start_scheduler(app_state.clone());
-
+    let scheduler_state = Arc::new(app_state.clone());
+    start_scheduler(scheduler_state);
+    
     println!("Starting server at http://localhost:8080");
 
     // Start web server
     HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(app_state.clone()))
+            .app_data(app_state.clone())
             .service(create_task)
             .service(get_tasks)
             .service(get_task)
             .service(update_task)
             .service(delete_task)
             .route("/", web::get().to(index))
-            .service(Files::new("/static", "static").show_files_listing())
+            .service(Files::new("/", ".").index_file("index.html"))
     })
     .bind("127.0.0.1:8080")?
     .run()
