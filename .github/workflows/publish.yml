@@ -2,7 +2,7 @@ name: publish
 on:
   push:
     branches:
-      - main
+      - master
 jobs:
   publish-pyscman-image:
     runs-on: ubuntu-latest

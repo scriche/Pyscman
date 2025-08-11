@@ -3,7 +3,7 @@
 ---
 A Simple Web interface for scheduling, editing and running python scripts in Docker
 
-Web interface is at [](http://localhost:8080)
+Web interface is at (http://localhost:8080)
 
 This is my personal project i made to run simple python scripts for automation, information gathering, notifications, etc... 
 
