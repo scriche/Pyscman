@@ -1,26 +1,165 @@
+use actix_multipart::Multipart;
+use futures_util::TryStreamExt as _;
+#[post("/api/tasks/{id}/upload")]
+async fn upload_file(
+    data: web::Data<AppState>,
+    id: web::Path<String>,
+    mut payload: Multipart,
+) -> impl Responder {
+    let task_id = id.into_inner();
+    // Ensure the task exists
+    let tasks = data.tasks.lock().unwrap();
+    if !tasks.contains_key(&task_id) {
+        return HttpResponse::NotFound().body("Task not found");
+    }
+    drop(tasks);
+
+    let scripts_dir = "scripts";
+    let task_dir = format!("{}/{}", scripts_dir, task_id);
+    if !std::path::Path::new(&task_dir).exists() {
+        if let Err(e) = std::fs::create_dir_all(&task_dir) {
+            return HttpResponse::InternalServerError().body(format!("Failed to create task dir: {}", e));
+        }
+    }
+
+    while let Ok(Some(mut field)) = payload.try_next().await {
+        let content_disposition = field.content_disposition();
+        let filename = if let Some(cd) = content_disposition {
+            if let Some(fname) = cd.get_filename() {
+                fname
+            } else {
+                return HttpResponse::BadRequest().body("No filename provided");
+            }
+        } else {
+            return HttpResponse::BadRequest().body("No content disposition");
+        };
+        let filepath = format!("{}/{}", task_dir, sanitize_filename::sanitize(&filename));
+        let mut f = match std::fs::File::create(&filepath) {
+            Ok(file) => file,
+            Err(e) => return HttpResponse::InternalServerError().body(format!("Failed to create file: {}", e)),
+        };
+        while let Some(chunk) = field.try_next().await.unwrap_or(None) {
+            if let Err(e) = std::io::Write::write_all(&mut f, &chunk) {
+                return HttpResponse::InternalServerError().body(format!("Failed to write file: {}", e));
+            }
+        }
+    }
+    HttpResponse::Ok().body("File uploaded")
+}
+
+// =========================
+// Imports
+// =========================
 use actix_files::Files;
 use actix_web::{
-    cookie::time::Date, delete, get, post, put, web, App, HttpResponse, HttpServer, Responder
+    delete, get, post, put, web, App, HttpResponse, HttpServer, Responder, Error, HttpRequest
 };
-use chrono::{DateTime, Local, Timelike, Duration};
+use actix_ws::{Message, CloseReason};
+use futures_util::stream::StreamExt;
+use chrono::{DateTime, Local, Timelike, Duration, Datelike};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
-    fs,
-    path::Path,
-    process::Command,
-    sync::{Arc, Mutex},
-    thread
+    collections::HashMap, fs, io::{BufRead, BufReader}, path::Path, process::{Command, Stdio}, sync::{Arc, Mutex}
 };
+use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver, unbounded_channel};
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
+use threadpool::ThreadPool;
+use std::env;
+use log::{info, error, warn};
+
+// =========================
+// WebSocket Helpers (async broadcast)
+// =========================
+fn broadcast_task_status(data: &web::Data<AppState>, task: &ScriptTask) {
+    let msg = serde_json::json!({
+        "type": "status",
+        "task_id": task.id,
+        "status": &task.status,
+        "last_run": task.last_run,
+        "schedule": &task.schedule,
+        "output": &task.output,
+    }).to_string();
+    let clients = data.ws_clients.lock().unwrap();
+    for sender in clients.iter() {
+        let _ = sender.send(msg.clone());
+    }
+}
+
+fn broadcast_task_output(data: &web::Data<AppState>, task_id: &str, line: &str) {
+    let msg = serde_json::json!({
+        "type": "output",
+        "task_id": task_id,
+        "line": line,
+    }).to_string();
+    let clients = data.ws_clients.lock().unwrap();
+    for sender in clients.iter() {
+        let _ = sender.send(msg.clone());
+    }
+}
+
+// =========================
+// WebSocket Handler (actix-ws)
+// =========================
+
+async fn ws_index(
+    req: HttpRequest,
+    stream: web::Payload,
+    data: web::Data<AppState>,
+) -> Result<HttpResponse, Error> {
+    let (response, mut session, mut msg_stream) = actix_ws::handle(&req, stream)?;
+
+    // Register this client for broadcast using async channel
+    let (tx, mut rx): (UnboundedSender<String>, UnboundedReceiver<String>) = unbounded_channel();
+    data.ws_clients.lock().unwrap().push(tx.clone());
+
+    // Spawn a task to forward broadcast messages to this websocket session
+    let mut session_clone = session.clone();
+    actix_web::rt::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            let _ = session_clone.text(msg).await;
+        }
+    });
+
+    // Handle incoming websocket messages
+    let data_clone = data.clone();
+    actix_web::rt::spawn(async move {
+        while let Some(Ok(msg)) = msg_stream.next().await {
+            match msg {
+                Message::Ping(bytes) => {
+                    let _ = session.pong(&bytes).await;
+                }
+                Message::Text(_) => {
+                    // Ignore text messages from client
+                }
+                Message::Binary(_) => {}
+                Message::Close(_) => {
+                    // Remove sender from ws_clients
+                    let mut clients = data_clone.ws_clients.lock().unwrap();
+                    clients.retain(|s| !s.same_channel(&tx));
+                    let _ = session.close(Some(CloseReason { code: actix_ws::CloseCode::Normal, description: None })).await;
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok(response)
+}
 
 // Task scheduling types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 enum ScheduleType {
     Once,
     Interval(u64), // seconds
-    Daily { hour: u32, minute: u32 },
+    Cron {
+        minute: Option<u32>,   // 0-59, None = any
+        hour: Option<u32>,     // 0-23, None = any
+        day: Option<u32>,      // 1-31, None = any
+        month: Option<u32>,    // 1-12, None = any
+        weekday: Option<u32>,  // 0-6 (Sun=0), None = any
+    },
 }
 
 // Task status
@@ -37,22 +176,27 @@ enum TaskStatus {
 struct ScriptTask {
     id: String,
     name: String,
+    description: String,
     script_content: String,
     schedule: ScheduleType,
     last_run: Option<DateTime<Local>>,
     status: TaskStatus,
     output: Option<String>,
+    enabled: bool,
 }
 
 // App state
 struct AppState {
     tasks: Mutex<HashMap<String, ScriptTask>>,
+    ws_clients: Mutex<Vec<UnboundedSender<String>>>,
+    pool: ThreadPool,
 }
 
 // Create task request
 #[derive(Debug, Deserialize)]
 struct CreateTaskRequest {
     name: String,
+    description: String,
     script_content: String,
     schedule: ScheduleType,
 }
@@ -61,6 +205,7 @@ struct CreateTaskRequest {
 #[derive(Debug, Deserialize)]
 struct UpdateTaskRequest {
     name: Option<String>,
+    description: Option<String>,
     script_content: Option<String>,
     schedule: Option<ScheduleType>,
 }
@@ -74,27 +219,30 @@ async fn create_task(
     task_req: web::Json<CreateTaskRequest>,
 ) -> impl Responder {
     let id = Uuid::new_v4().to_string();
+
+
     let new_task = ScriptTask {
         id: id.clone(),
         name: task_req.name.clone(),
+        description: task_req.description.clone(),
         script_content: task_req.script_content.clone(),
         schedule: task_req.schedule.clone(),
         last_run: None,
         status: TaskStatus::Pending,
         output: None,
+        enabled: true, // default enabled
     };
 
     data.tasks.lock().unwrap().insert(id.clone(), new_task);
 
     // Save the new task to file
     save_tasks_to_file(&data.tasks.lock().unwrap());
-    
+
     HttpResponse::Created().json(id)
 }
 
 #[get("/api/tasks")]
 async fn get_tasks(data: web::Data<AppState>) -> impl Responder {
-    println!("Fetching all tasks");
     let tasks = match data.tasks.lock() {
         Ok(t) => t,
         Err(e) => {
@@ -128,6 +276,9 @@ async fn update_task(
         if let Some(name) = &update_req.name {
             task.name = name.clone();
         }
+        if let Some(description) = &update_req.description {
+            task.description = description.clone();
+        }
         if let Some(content) = &update_req.script_content {
             task.script_content = content.clone();
         }
@@ -146,16 +297,40 @@ async fn update_task(
         HttpResponse::NotFound().body("Task not found")
     }
 }
+
+// Enable/disable task
+#[derive(Debug, Deserialize)]
+struct EnableTaskRequest {
+    enabled: bool,
+}
+
+#[actix_web::patch("/api/tasks/{id}/enabled")]
+async fn set_task_enabled(
+    data: web::Data<AppState>,
+    id: web::Path<String>,
+    req: web::Json<EnableTaskRequest>,
+) -> impl Responder {
+    let mut tasks = data.tasks.lock().unwrap();
+    let task_id = id.into_inner();
+    if let Some(task) = tasks.get_mut(&task_id) {
+        task.enabled = req.enabled;
+        let response_task = task.clone();
+        save_tasks_to_file(&tasks);
+        HttpResponse::Ok().json(response_task)
+    } else {
+        HttpResponse::NotFound().body("Task not found")
+    }
+}
 #[delete("/api/tasks/{id}")]
 async fn delete_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
     let mut tasks = data.tasks.lock().unwrap();
     let task_id = id.into_inner();
 
-    // Remove script file if it exists
-    let script_path = format!("scripts/{}.py", task_id);
-    if Path::new(&script_path).exists() {
-        if let Err(e) = fs::remove_file(script_path) {
-            eprintln!("Failed to delete script file: {}", e);
+    // Remove script folder if it exists
+    let script_dir = format!("scripts/{}", task_id);
+    if Path::new(&script_dir).exists() {
+        if let Err(e) = fs::remove_dir_all(&script_dir) {
+            eprintln!("Failed to delete script directory: {}", e);
         }
     }
 
@@ -166,108 +341,320 @@ async fn delete_task(data: web::Data<AppState>, id: web::Path<String>) -> impl R
         HttpResponse::NotFound().body("Task not found")
     }
 }
+// Run a task immediately
+#[post("/api/tasks/{id}/run")]
+async fn run_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
+    let task_id = id.into_inner();
+    let mut tasks = match data.tasks.lock() {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to lock tasks: {e}");
+            return HttpResponse::InternalServerError().body("Lock poisoned");
+        }
+    };
+
+    if let Some(task) = tasks.get_mut(&task_id) {
+        if task.status == TaskStatus::Running {
+            return HttpResponse::Conflict().body("Task is already running");
+        }
+
+        task.status = TaskStatus::Running;
+        task.last_run = Some(Local::now());
+        broadcast_task_status(&data, task);
+
+        let task_content = task.script_content.clone();
+        let task_id_clone = task_id.clone();
+        let data_clone = data.clone();
+        let pool = data.pool.clone();
+
+        pool.execute(move || {
+            let output = run_python_script_stream(&task_content, &task_id_clone, &data_clone);
+            let mut tasks = match data_clone.tasks.lock() {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to lock tasks: {e}");
+                    return;
+                }
+            };
+            if let Some(task) = tasks.get_mut(&task_id_clone) {
+                task.output = Some(output.clone());
+                let new_status = if output.contains("ERROR") {
+                    TaskStatus::Failed
+                } else {
+                    TaskStatus::Completed
+                };
+                task.status = new_status.clone();
+                broadcast_task_status(&data_clone, task);
+                save_tasks_to_file(&tasks);
+            }
+        });
+
+        HttpResponse::Accepted().body("Task is running")
+    } else {
+        HttpResponse::NotFound().body("Task not found")
+    }
+}
 
 fn save_tasks_to_file(tasks: &HashMap<String, ScriptTask>) {
-    if let Ok(json) = serde_json::to_string(tasks) {
-        if let Err(e) = fs::write(TASKS_FILE, json) {
-            eprintln!("Failed to write tasks to file: {}", e);
+    match serde_json::to_string(tasks) {
+        Ok(json) => {
+            if let Err(e) = fs::write(TASKS_FILE, json) {
+                error!("Failed to write tasks to file: {}", e);
+            }
         }
+        Err(e) => error!("Failed to serialize tasks: {}", e),
     }
 }
 
 fn load_tasks_from_file() -> HashMap<String, ScriptTask> {
-    if let Ok(contents) = fs::read_to_string(TASKS_FILE) {
-        match serde_json::from_str(&contents) {
+    match fs::read_to_string(TASKS_FILE) {
+        Ok(contents) => match serde_json::from_str(&contents) {
             Ok(tasks) => tasks,
             Err(e) => {
-                eprintln!("Failed to parse tasks file: {}", e);
+                error!("Failed to parse tasks file: {}", e);
                 HashMap::new()
             }
+        },
+        Err(e) => {
+            warn!("Could not read tasks file: {}", e);
+            HashMap::new()
         }
-    } else {
-        HashMap::new()
     }
 }
 
-// Run Python script and capture output
-fn run_python_script(content: &str, task_id: &str) -> String {
-    // Create a temporary directory for scripts
+// Run Python script and stream output line-by-line
+fn run_python_script_stream(
+    content: &str,
+    task_id: &str,
+    data: &web::Data<AppState>,
+) -> String {
     let scripts_dir = "scripts";
-    if !Path::new(scripts_dir).exists() {
-        fs::create_dir_all(scripts_dir).expect("Failed to create scripts directory");
+    let task_dir = format!("{}/{}", scripts_dir, task_id);
+    if !Path::new(&task_dir).exists() {
+        if let Err(e) = fs::create_dir_all(&task_dir) {
+            error!("Failed to create task script directory: {}", e);
+            return format!("ERROR: Failed to create script directory: {}", e);
+        }
     }
-    
-    let script_path = format!("{}/{}.py", scripts_dir, task_id);
-    fs::write(&script_path, content).expect("Failed to write script file");
-    
-    match Command::new("python").arg(&script_path).output() {
-        Ok(output) => {
-            if output.status.success() {
-                String::from_utf8_lossy(&output.stdout).to_string()
-            } else {
-                format!(
-                    "ERROR: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )
+    let script_path = format!("{}/{}.py", task_dir, task_id);
+    if let Err(e) = fs::write(&script_path, content) {
+        error!("Failed to write script file: {}", e);
+        return format!("ERROR: Failed to write script file: {}", e);
+    }
+
+    // Step 1: Detect imports
+    let imports = extract_imports(content);
+
+    // Step 2: Install missing packages
+    for module in imports {
+        if !is_module_installed(&module) {
+            if let Err(e) = install_python_package(&module) {
+                warn!("Failed to install Python package {}: {}", module, e);
             }
         }
-        Err(e) => format!("EXECUTION FAILED: {}", e),
     }
+
+    // Step 3: Run script and stream output
+    let mut output_accum = String::new();
+    let mut cmd = match Command::new("python")
+        .arg("-u")
+        .arg(&script_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            error!("Failed to spawn python process: {}", e);
+            return format!("EXECUTION FAILED: {}", e);
+        }
+    };
+
+    // Helper to update in-memory output for the running task
+    let update_task_output = |line: &str| {
+        if let Ok(mut tasks) = data.tasks.lock() {
+            if let Some(task) = tasks.get_mut(task_id) {
+                if let Some(ref mut out) = task.output {
+                    out.push_str(line);
+                    out.push('\n');
+                } else {
+                    task.output = Some(format!("{}\n", line));
+                }
+            }
+        }
+    };
+
+    // Stream stdout
+    if let Some(stdout) = cmd.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    output_accum.push_str(&l);
+                    output_accum.push('\n');
+                    broadcast_task_output(data, task_id, &l);
+                    update_task_output(&l);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    // Stream stderr
+    if let Some(stderr) = cmd.stderr.take() {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    output_accum.push_str(&l);
+                    output_accum.push('\n');
+                    broadcast_task_output(data, task_id, &l);
+                    update_task_output(&l);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    let status = match cmd.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to wait for python process: {}", e);
+            return format!("ERROR: Failed to wait for python process: {}", e);
+        }
+    };
+    if !status.success() {
+        output_accum = format!("ERROR: {}", output_accum);
+    }
+    output_accum
 }
+
+fn extract_imports(script: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    for line in script.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import ") {
+            let parts: Vec<&str> = trimmed.strip_prefix("import ").unwrap().split(',').collect();
+            for part in parts {
+                let name = part.trim().split_whitespace().next().unwrap_or("").to_string();
+                if !name.is_empty() {
+                    modules.push(name);
+                }
+            }
+        } else if trimmed.starts_with("from ") {
+            if let Some(part) = trimmed.strip_prefix("from ") {
+                let name = part.split_whitespace().next().unwrap_or("").to_string();
+                if !name.is_empty() {
+                    modules.push(name);
+                }
+            }
+        }
+    }
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
+fn is_module_installed(module: &str) -> bool {
+    Command::new("python")
+        .args(["-c", &format!("import {}", module)])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn install_python_package(module: &str) -> std::io::Result<()> {
+    let status = Command::new("pip")
+        .args(["install", module])
+        .status()?;
+
+    if !status.success() {
+        eprintln!("Failed to install Python package: {}", module);
+    }
+
+    Ok(())
+}
+
 
 // Scheduler thread
 fn start_scheduler(data: Arc<web::Data<AppState>>) {
-    thread::spawn(move || {
+    let pool = data.pool.clone();
+    std::thread::spawn(move || {
         loop {
             let now = Local::now();
-            let mut tasks = data.tasks.lock().unwrap();
+            let mut tasks = match data.tasks.lock() {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to lock tasks: {e}");
+                    std::thread::sleep(StdDuration::from_secs(1));
+                    continue;
+                }
+            };
 
             for (id, task) in tasks.iter_mut() {
-                let should_run = match task.schedule {
+                if !task.enabled {
+                    continue;
+                }
+                let should_run = match &task.schedule {
                     ScheduleType::Once => task.last_run.is_none(),
                     ScheduleType::Interval(secs) => task
                         .last_run
-                        .map_or(true, |t| Local::now().signed_duration_since(t) >= Duration::seconds(secs as i64)),
-                    ScheduleType::Daily { hour, minute } => {
-                        let scheduled_time = now.hour() == hour && now.minute() == minute;
-                        let never_run = task.last_run.is_none();
-                        let new_day = task.last_run.map_or(false, |t| {
-                            let last_run: DateTime<Local> = t.into();
-                            last_run.date_naive() < now.date_naive()
-                        });
+                        .map_or(true, |t| Local::now().signed_duration_since(t) >= Duration::seconds(*secs as i64)),
+                    ScheduleType::Cron { minute, hour, day, month, weekday } => {
+                        let m = now.minute();
+                        let h = now.hour();
+                        let d = now.day();
+                        let mo = now.month();
+                        let wd = now.weekday().num_days_from_sunday();
 
-                        scheduled_time && (never_run || new_day)
+                        let minute_match = match minute { Some(val) => m == *val, None => true };
+                        let hour_match = match hour { Some(val) => h == *val, None => true };
+                        let day_match = match day { Some(val) => d == *val, None => true };
+                        let month_match = match month { Some(val) => mo == *val, None => true };
+                        let weekday_match = match weekday { Some(val) => wd == *val, None => true };
+
+                        let scheduled_time = minute_match && hour_match && day_match && month_match && weekday_match;
+                        let never_run = task.last_run.is_none();
+                        let new_period = task.last_run.map_or(false, |t| {
+                            // Only run once per scheduled time
+                            let last = t;
+                            last.minute() != m || last.hour() != h || last.day() != d || last.month() != mo || last.weekday().num_days_from_sunday() != wd
+                        });
+                        scheduled_time && (never_run || new_period)
                     }
                 };
 
                 if should_run && task.status != TaskStatus::Running {
                     task.status = TaskStatus::Running;
+                    task.last_run = Some(Local::now());
+                    task.output = None;
+                    broadcast_task_status(&data, task);
                     let task_content = task.script_content.clone();
                     let task_id = id.clone();
                     let data_clone = data.clone();
-
-                    // Run script in separate thread
-                    thread::spawn(move || {
-                        let output = run_python_script(&task_content, &task_id);
-                        
-                        // Update task status and output
-                        let mut tasks = data_clone.tasks.lock().unwrap();
+                    let pool = pool.clone();
+                    pool.execute(move || {
+                        let output = run_python_script_stream(&task_content, &task_id, &data_clone);
+                        let mut tasks = match data_clone.tasks.lock() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!("Failed to lock tasks: {e}");
+                                return;
+                            }
+                        };
                         if let Some(task) = tasks.get_mut(&task_id) {
-                            task.last_run = Some(Local::now());
-                            task.status = if output.contains("ERROR") {
+                            let new_status = if output.contains("ERROR") {
                                 TaskStatus::Failed
                             } else {
                                 TaskStatus::Completed
                             };
+                            task.status = new_status.clone();
                             task.output = Some(output);
+                            broadcast_task_status(&data_clone, task);
+                            save_tasks_to_file(&tasks);
                         }
                     });
                 }
             }
-
-            // Release lock before sleeping
             drop(tasks);
-            thread::sleep(StdDuration::from_secs(1)); // Check every second
+            std::thread::sleep(StdDuration::from_secs(1));
         }
     });
 }
@@ -281,21 +668,37 @@ async fn index() -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env_logger::init();
     // Create scripts directory if it doesn't exist
     if !Path::new("scripts").exists() {
-        fs::create_dir("scripts").expect("Failed to create scripts directory");
+        if let Err(e) = fs::create_dir("scripts") {
+            error!("Failed to create scripts directory: {}", e);
+            return Err(e);
+        }
     }
-    
-    // Initialize app state
+
+    // Load tasks and reset any stuck in Running state
+    let mut loaded_tasks = load_tasks_from_file();
+    for task in loaded_tasks.values_mut() {
+        if task.status == TaskStatus::Running {
+            task.status = TaskStatus::Pending;
+        }
+    }
+    // Initialize app state with thread pool
+    let pool = ThreadPool::new(8); // 8 threads, adjust as needed
     let app_state = web::Data::new(AppState {
-        tasks: Mutex::new(load_tasks_from_file()),
+        tasks: Mutex::new(loaded_tasks),
+        ws_clients: Mutex::new(Vec::new()),
+        pool,
     });
 
     // Start scheduler thread
     let scheduler_state = Arc::new(app_state.clone());
     start_scheduler(scheduler_state);
-    
-    println!("Starting server at http://localhost:8080");
+
+    // Configurable bind address
+    let bind_addr = env::var("PYSCMAN_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    info!("Starting server at http://{}", bind_addr);
 
     // Start web server
     HttpServer::new(move || {
@@ -306,10 +709,14 @@ async fn main() -> std::io::Result<()> {
             .service(get_task)
             .service(update_task)
             .service(delete_task)
+            .service(run_task)
+            .service(set_task_enabled)
+            .service(upload_file)
             .route("/", web::get().to(index))
+            .route("/ws/", web::get().to(ws_index))
             .service(Files::new("/", ".").index_file("index.html"))
     })
-    .bind("127.0.0.1:8080")?
+    .bind(bind_addr)?
     .run()
     .await
 }

@@ -1,1 +1,1 @@
-{}
+{"89bc5ca5-7802-4cd5-bc87-c967e9866596":{"id":"89bc5ca5-7802-4cd5-bc87-c967e9866596","name":"test","description":"print 1 the DONE","script_content":"import time\nprint(\"1\")\ntime.sleep(3)\nprint(\"Done\")\n","schedule":{"Interval":15},"last_run":"2025-08-11T15:40:45.204745600-07:00","status":"Completed","output":"1\nDone\n","enabled":true}}
