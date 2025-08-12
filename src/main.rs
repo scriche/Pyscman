@@ -14,8 +14,7 @@ async fn upload_file(
     }
     drop(tasks);
 
-    let scripts_dir = "scripts";
-    let task_dir = format!("{}/{}", scripts_dir, task_id);
+    let task_dir = format!("{}/{}", SCRIPTS_DIR, task_id);
     if !std::path::Path::new(&task_dir).exists() {
         if let Err(e) = std::fs::create_dir_all(&task_dir) {
             return HttpResponse::InternalServerError().body(format!("Failed to create task dir: {}", e));
@@ -210,7 +209,8 @@ struct UpdateTaskRequest {
     schedule: Option<ScheduleType>,
 }
 
-const TASKS_FILE: &str = "tasks.json";
+const TASKS_FILE: &str = "data/tasks.json";
+const SCRIPTS_DIR: &str = "data/scripts";
 
 // API endpoints
 #[post("/api/tasks")]
@@ -327,7 +327,7 @@ async fn delete_task(data: web::Data<AppState>, id: web::Path<String>) -> impl R
     let task_id = id.into_inner();
 
     // Remove script folder if it exists
-    let script_dir = format!("scripts/{}", task_id);
+    let script_dir = format!("{}/{}", SCRIPTS_DIR, task_id);
     if Path::new(&script_dir).exists() {
         if let Err(e) = fs::remove_dir_all(&script_dir) {
             eprintln!("Failed to delete script directory: {}", e);
@@ -428,8 +428,7 @@ fn run_python_script_stream(
     task_id: &str,
     data: &web::Data<AppState>,
 ) -> String {
-    let scripts_dir = "scripts";
-    let task_dir = format!("{}/{}", scripts_dir, task_id);
+    let task_dir = format!("{}/{}", SCRIPTS_DIR, task_id);
     if !Path::new(&task_dir).exists() {
         if let Err(e) = fs::create_dir_all(&task_dir) {
             error!("Failed to create task script directory: {}", e);
@@ -670,10 +669,10 @@ async fn index() -> impl Responder {
 async fn main() -> std::io::Result<()> {
     env_logger::init();
     // Create scripts directory if it doesn't exist
-    if !Path::new("scripts").exists() {
-        if let Err(e) = fs::create_dir("scripts") {
-            error!("Failed to create scripts directory: {}", e);
-            return Err(e);
+    if !Path::new(SCRIPTS_DIR).exists() {
+        if let Err(e) = fs::create_dir_all(SCRIPTS_DIR) {
+            eprintln!("Failed to create scripts directory: {}", e);
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to create scripts directory"));
         }
     }
 
