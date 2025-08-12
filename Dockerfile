@@ -10,7 +10,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y python3 python3-p
 RUN useradd -m pyscman
 WORKDIR /app
 COPY --from=builder /app/target/release/Pyscman /app/Pyscman
-COPY --from=builder /app/scripts /app/scripts
 COPY --from=builder /app/src/index.html /app/index.html
 RUN chown -R pyscman:pyscman /app
 USER pyscman
