@@ -455,7 +455,12 @@ fn run_python_script_stream(
 
     // Step 3: Run script and stream output
     let mut output_accum = String::new();
-    let mut cmd = match Command::new("python")
+    let python_bin = if Path::new("venv/bin/python3").exists() {
+        "venv/bin/python3"
+    } else {
+        "python3"
+    };
+    let mut cmd = match Command::new(python_bin)
         .arg("-u")
         .arg(&script_path)
         .stdout(Stdio::piped())
@@ -552,7 +557,8 @@ fn extract_imports(script: &str) -> Vec<String> {
 }
 
 fn is_module_installed(module: &str) -> bool {
-    Command::new("python")
+    let python_bin = "venv/bin/python"; // adjust path if needed
+    Command::new(python_bin)
         .args(["-c", &format!("import {}", module)])
         .output()
         .map(|o| o.status.success())
@@ -560,17 +566,25 @@ fn is_module_installed(module: &str) -> bool {
 }
 
 fn install_python_package(module: &str) -> std::io::Result<()> {
-    let status = Command::new("pip")
-        .args(["install", module])
-        .status()?;
+    let python_bin = "venv/bin/python"; // adjust path if needed
 
-    if !status.success() {
-        eprintln!("Failed to install Python package: {}", module);
+    match Command::new(python_bin)
+        .args(["-m", "pip", "install", module])
+        .status()
+    {
+        Ok(status) => {
+            println!("Package {} installation status: {}", module, status);
+            if !status.success() {
+                eprintln!("Failed to install Python package: {}", module);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to run {}: {}", python_bin, e);
+        }
     }
 
     Ok(())
 }
-
 
 // Scheduler thread
 fn start_scheduler(data: Arc<web::Data<AppState>>) {
@@ -675,6 +689,16 @@ async fn main() -> std::io::Result<()> {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to create scripts directory"));
         }
     }
+
+    // load a venv if it exists
+    if !Path::new("venv").exists() {
+        if let Err(e) = Command::new("python3")
+            .args(["-m", "venv", "venv"])
+            .status()
+        {            eprintln!("Failed to create virtual environment: {}", e);
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to create virtual environment"));
+        }
+    }     
 
     // Load tasks and reset any stuck in Running state
     let mut loaded_tasks = load_tasks_from_file();

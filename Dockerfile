@@ -6,7 +6,7 @@ RUN cargo build --release && rm -f target/release/deps/pyscman*
 COPY . .
 RUN cargo build --release
 FROM debian:stable-slim
-RUN apt-get update && apt-get upgrade -y && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get upgrade -y && apt-get install -y python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
 RUN useradd -m pyscman
 WORKDIR /app
 COPY --from=builder /app/target/release/Pyscman /app/Pyscman

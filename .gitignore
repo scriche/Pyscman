@@ -1,2 +1,4 @@
 /target
-/scripts
+/data/scripts/
+/data/tasks.json
+/venv
