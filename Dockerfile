@@ -10,8 +10,6 @@ WORKDIR /app
 COPY ${BINARY_PATH} /app/Pyscman
 COPY src/index.html /app/index.html
 
-RUN chown -R pyscman:pyscman /app
-
 EXPOSE 8080
 ENV PYSCMAN_BIND=0.0.0.0:8080
 CMD ["/app/Pyscman"]
