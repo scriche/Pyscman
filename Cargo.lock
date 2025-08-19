@@ -3,28 +3,6 @@
 version = 4
 
 [[package]]
-name = "Pyscman"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-cors",
- "actix-files",
- "actix-multipart",
- "actix-web",
- "actix-ws",
- "chrono",
- "env_logger",
- "futures-util",
- "log",
- "sanitize-filename",
- "serde",
- "serde_json",
- "threadpool",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "actix"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1416,6 +1394,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pyscman"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-cors",
+ "actix-files",
+ "actix-multipart",
+ "actix-web",
+ "actix-ws",
+ "chrono",
+ "env_logger",
+ "futures-util",
+ "log",
+ "sanitize-filename",
+ "serde",
+ "serde_json",
+ "threadpool",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

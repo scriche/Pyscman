@@ -3,16 +3,34 @@ on:
   push:
     branches:
       - master
+
 jobs:
-  publish-pyscman-image:
+  build-and-publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
+      # 1) Checkout code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 2) Install Rust toolchain
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      # 3) Build release binary
+      - name: Build Rust binary
+        run: cargo build --release
+
+      # 4) List binary size (debug)
+      - name: Verify binary
+        run: ls -lh target/release/
+
+      # 5) Log in to GitHub Container Registry
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -20,6 +38,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 6) Build minimal Docker image with prebuilt binary
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -27,3 +46,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ghcr.io/scriche/pyscman:latest
+          build-args: |
+            BINARY_PATH=target/release/pyscman
