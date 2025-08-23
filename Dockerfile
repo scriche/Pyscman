@@ -1,7 +1,7 @@
 FROM debian:stable-slim
 
 ARG BINARY_PATH
-RUN apt-get update && apt-get install -y python3 python3-pip python3-venv firefox-esr firefox-geckodriver ffmpeg curl wget \
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv firefox-esr ffmpeg curl wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
