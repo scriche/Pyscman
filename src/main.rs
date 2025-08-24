@@ -176,6 +176,7 @@ struct ScriptTask {
     id: String,
     name: String,
     description: String,
+    #[serde(skip_deserializing)]
     script_content: String,
     schedule: ScheduleType,
     last_run: Option<DateTime<Local>>,
@@ -221,11 +222,21 @@ async fn create_task(
     let id = Uuid::new_v4().to_string();
 
 
+    // Save script to file
+    let task_dir = format!("{}/{}", SCRIPTS_DIR, id);
+    if let Err(e) = fs::create_dir_all(&task_dir) {
+        return HttpResponse::InternalServerError().body(format!("Failed to create task dir: {}", e));
+    }
+    let script_path = format!("{}/{}.py", task_dir, id);
+    if let Err(e) = fs::write(&script_path, &task_req.script_content) {
+        return HttpResponse::InternalServerError().body(format!("Failed to save script: {}", e));
+    }
+
     let new_task = ScriptTask {
         id: id.clone(),
         name: task_req.name.clone(),
         description: task_req.description.clone(),
-        script_content: task_req.script_content.clone(),
+        script_content: String::new(), // don’t store in JSON
         schedule: task_req.schedule.clone(),
         last_run: None,
         status: TaskStatus::Pending,
@@ -250,7 +261,17 @@ async fn get_tasks(data: web::Data<AppState>) -> impl Responder {
             return HttpResponse::InternalServerError().body("Lock poisoned");
         }
     };
-    let task_list: Vec<ScriptTask> = tasks.values().cloned().collect();
+
+    let mut task_list: Vec<ScriptTask> = tasks.values().cloned().collect();
+
+    // Load script content from file for each task
+    for task in &mut task_list {
+        let script_path = format!("{}/{}/{}.py", SCRIPTS_DIR, task.id, task.id);
+        if let Ok(content) = fs::read_to_string(&script_path) {
+            task.script_content = content;
+        }
+    }
+
     HttpResponse::Ok().json(task_list)
 }
 
@@ -280,7 +301,15 @@ async fn update_task(
             task.description = description.clone();
         }
         if let Some(content) = &update_req.script_content {
-            task.script_content = content.clone();
+            let task_dir = format!("{}/{}", SCRIPTS_DIR, task_id);
+            if let Err(e) = fs::create_dir_all(&task_dir) {
+                return HttpResponse::InternalServerError().body(format!("Failed to create task dir: {}", e));
+            }
+            let script_path = format!("{}/{}.py", task_dir, task_id);
+            if let Err(e) = fs::write(&script_path, content) {
+                return HttpResponse::InternalServerError().body(format!("Failed to update script: {}", e));
+            }
+            task.script_content = String::new(); // keep empty
         }
         if let Some(schedule) = &update_req.schedule {
             task.schedule = schedule.clone();
@@ -362,7 +391,14 @@ async fn run_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Resp
         task.last_run = Some(Local::now());
         broadcast_task_status(&data, task);
 
-        let task_content = task.script_content.clone();
+        let script_path = format!("{}/{}/{}.py", SCRIPTS_DIR, task_id, task_id);
+        let task_content = match fs::read_to_string(&script_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return HttpResponse::InternalServerError()
+                    .body(format!("Failed to read script: {}", e));
+            }
+        };
         let task_id_clone = task_id.clone();
         let data_clone = data.clone();
         let pool = data.pool.clone();
