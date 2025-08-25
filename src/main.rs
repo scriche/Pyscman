@@ -509,17 +509,7 @@ fn run_python_script_stream(
     data: &web::Data<AppState>,
 ) -> String {
     let task_dir = format!("{}/{}", SCRIPTS_DIR, task_id);
-    if !Path::new(&task_dir).exists() {
-        if let Err(e) = fs::create_dir_all(&task_dir) {
-            error!("Failed to create task script directory: {}", e);
-            return format!("ERROR: Failed to create script directory: {}", e);
-        }
-    }
     let script_path = format!("{}/{}.py", task_dir, task_id);
-    if let Err(e) = fs::write(&script_path, content) {
-        error!("Failed to write script file: {}", e);
-        return format!("ERROR: Failed to write script file: {}", e);
-    }
 
     // Step 1: Detect imports
     let imports = extract_imports(content);
