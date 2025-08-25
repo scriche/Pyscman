@@ -1,5 +1,7 @@
 use actix_multipart::Multipart;
 use futures_util::TryStreamExt as _;
+use zip::read::ZipArchive;
+use std::io::{BufReader, Cursor};
 #[post("/api/tasks/{id}/upload")]
 async fn upload_file(
     data: web::Data<AppState>,
@@ -7,6 +9,7 @@ async fn upload_file(
     mut payload: Multipart,
 ) -> impl Responder {
     let task_id = id.into_inner();
+
     // Ensure the task exists
     let tasks = data.tasks.lock().unwrap();
     if !tasks.contains_key(&task_id) {
@@ -17,7 +20,8 @@ async fn upload_file(
     let task_dir = format!("{}/{}", SCRIPTS_DIR, task_id);
     if !std::path::Path::new(&task_dir).exists() {
         if let Err(e) = std::fs::create_dir_all(&task_dir) {
-            return HttpResponse::InternalServerError().body(format!("Failed to create task dir: {}", e));
+            return HttpResponse::InternalServerError()
+                .body(format!("Failed to create task dir: {}", e));
         }
     }
 
@@ -25,24 +29,65 @@ async fn upload_file(
         let content_disposition = field.content_disposition();
         let filename = if let Some(cd) = content_disposition {
             if let Some(fname) = cd.get_filename() {
-                fname
+                fname.to_string()
             } else {
                 return HttpResponse::BadRequest().body("No filename provided");
             }
         } else {
             return HttpResponse::BadRequest().body("No content disposition");
         };
-        let filepath = format!("{}/{}", task_dir, sanitize_filename::sanitize(&filename));
-        let mut f = match std::fs::File::create(&filepath) {
-            Ok(file) => file,
-            Err(e) => return HttpResponse::InternalServerError().body(format!("Failed to create file: {}", e)),
-        };
+
+        // Read all uploaded bytes into memory
+        let mut data_bytes = Vec::new();
         while let Some(chunk) = field.try_next().await.unwrap_or(None) {
-            if let Err(e) = std::io::Write::write_all(&mut f, &chunk) {
-                return HttpResponse::InternalServerError().body(format!("Failed to write file: {}", e));
+            data_bytes.extend_from_slice(&chunk);
+        }
+
+        // Check if file is a ZIP
+        if filename.to_lowercase().ends_with(".zip") {
+            let cursor = Cursor::new(&data_bytes);
+            let mut zip = match ZipArchive::new(cursor) {
+                Ok(z) => z,
+                Err(e) => return HttpResponse::BadRequest().body(format!("Invalid ZIP file: {}", e)),
+            };
+
+            // Extract all files to the task directory
+            for i in 0..zip.len() {
+                let mut file = zip.by_index(i).unwrap();
+                let outpath = match file.enclosed_name() {
+                    Some(path) => task_dir.clone() + "/" + &path.to_string_lossy(),
+                    None => continue,
+                };
+
+                if file.name().ends_with('/') {
+                    // It's a directory
+                    std::fs::create_dir_all(&outpath).ok();
+                } else {
+                    if let Some(parent) = std::path::Path::new(&outpath).parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    let mut outfile = std::fs::File::create(&outpath).map_err(|e| {
+                        HttpResponse::InternalServerError()
+                            .body(format!("Failed to create file: {}", e))
+                    }).unwrap();
+                    std::io::copy(&mut file, &mut outfile).unwrap();
+                }
+            }
+        } else {
+            // Regular file, save normally
+            let filepath = format!("{}/{}", task_dir, sanitize_filename::sanitize(&filename));
+            let mut f = match std::fs::File::create(&filepath) {
+                Ok(file) => file,
+                Err(e) => return HttpResponse::InternalServerError()
+                    .body(format!("Failed to create file: {}", e)),
+            };
+            if let Err(e) = std::io::Write::write_all(&mut f, &data_bytes) {
+                return HttpResponse::InternalServerError()
+                    .body(format!("Failed to write file: {}", e));
             }
         }
     }
+
     HttpResponse::Ok().body("File uploaded")
 }
 
@@ -58,7 +103,7 @@ use futures_util::stream::StreamExt;
 use chrono::{DateTime, Local, Timelike, Duration, Datelike};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap, fs, io::{BufRead, BufReader}, path::Path, process::{Command, Stdio}, sync::{Arc, Mutex}
+    collections::HashMap, fs, io::{BufRead}, path::Path, process::{Command, Stdio}, sync::{Arc, Mutex}
 };
 use tokio::sync::mpsc::{UnboundedSender, UnboundedReceiver, unbounded_channel};
 use std::time::Duration as StdDuration;
@@ -220,7 +265,6 @@ async fn create_task(
     task_req: web::Json<CreateTaskRequest>,
 ) -> impl Responder {
     let id = Uuid::new_v4().to_string();
-
 
     // Save script to file
     let task_dir = format!("{}/{}", SCRIPTS_DIR, id);

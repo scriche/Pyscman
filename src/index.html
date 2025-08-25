@@ -874,44 +874,75 @@
         
         // Handle form submission
         async function handleFormSubmit(e) {
-            e.preventDefault();
-            const taskId = taskIdInput.value;
-            const name = taskNameInput.value;
-            const description = taskDescInput.value;
-            const scriptContent = scriptContentInput.value;
-            // Get schedule based on selected type
-            let schedule;
-            if (currentScheduleType === 'once') {
-                schedule = 'Once';
-            } else if (currentScheduleType === 'interval') {
-                const seconds = parseInt(document.getElementById('interval-seconds').value);
-                schedule = { Interval: seconds };
-            } else if (currentScheduleType === 'cron') {
-                const minute = document.getElementById('cron-minute').value;
-                const hour = document.getElementById('cron-hour').value;
-                const day = document.getElementById('cron-day').value;
-                const month = document.getElementById('cron-month').value;
-                const weekday = document.getElementById('cron-weekday').value;
-                schedule = {
-                    Cron: {
-                        minute: minute !== '' ? parseInt(minute) : null,
-                        hour: hour !== '' ? parseInt(hour) : null,
-                        day: day !== '' ? parseInt(day) : null,
-                        month: month !== '' ? parseInt(month) : null,
-                        weekday: weekday !== '' ? parseInt(weekday) : null
-                    }
-                };
-            }
+        e.preventDefault();
+        const taskId = taskIdInput.value;
+        const name = taskNameInput.value;
+        const description = taskDescInput.value;
+        const scriptContent = scriptContentInput.value;
+
+        // Build schedule
+        let schedule;
+        if (currentScheduleType === 'once') {
+            schedule = 'Once';
+        } else if (currentScheduleType === 'interval') {
+            const seconds = parseInt(document.getElementById('interval-seconds').value);
+            schedule = { Interval: seconds };
+        } else if (currentScheduleType === 'cron') {
+            const minute = document.getElementById('cron-minute').value;
+            const hour = document.getElementById('cron-hour').value;
+            const day = document.getElementById('cron-day').value;
+            const month = document.getElementById('cron-month').value;
+            const weekday = document.getElementById('cron-weekday').value;
+            schedule = {
+                Cron: {
+                    minute: minute !== '' ? parseInt(minute) : null,
+                    hour: hour !== '' ? parseInt(hour) : null,
+                    day: day !== '' ? parseInt(day) : null,
+                    month: month !== '' ? parseInt(month) : null,
+                    weekday: weekday !== '' ? parseInt(weekday) : null,
+                }
+            };
+        }
+
+        const payload = { 
+            name, 
+            description, 
+            schedule, 
+            script_content: scriptContent 
+        };
+
+        try {
+            let savedTask;
             if (taskId) {
                 // Update existing task
-                await updateTaskApi(taskId, name, description, schedule, scriptContent);
+                const response = await fetch(`/api/tasks/${taskId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!response.ok) throw new Error(await response.text());
+                savedTask = await response.json();
             } else {
                 // Create new task
-                await createTaskApi(name, description, schedule, scriptContent);
+                const response = await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!response.ok) throw new Error(await response.text());
+                savedTask = await response.json();
+
+                closeModal();
             }
-            closeModal();
+
             await fetchTasks();
+
+        } catch (err) {
+            alert("Failed to save task: " + err.message);
+            console.error(err);
         }
+    }
+
         
         // Create task via API
         async function createTaskApi(name, description, schedule, scriptContent) {
