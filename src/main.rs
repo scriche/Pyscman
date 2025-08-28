@@ -761,7 +761,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     // load a venv if it exists
-    if !Path::new("venv").exists() {
+    if !Path::new("venv/bin").exists() {
         if let Err(e) = Command::new("python3")
             .args(["-m", "venv", "venv"])
             .status()
