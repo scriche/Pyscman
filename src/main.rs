@@ -59,7 +59,7 @@ async fn upload_file(
                     None => continue,
                 };
 
-                if file.name().ends_with('/') {
+                if file.name().map(|name| name.ends_with('/')).unwrap_or(false) {
                     // It's a directory
                     std::fs::create_dir_all(&outpath).ok();
                 } else {
