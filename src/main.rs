@@ -322,7 +322,7 @@ async fn get_tasks(data: web::Data<AppState>) -> impl Responder {
 #[get("/api/tasks/{id}")]
 async fn get_task(data: web::Data<AppState>, id: web::Path<String>) -> impl Responder {
     let tasks = data.tasks.lock().unwrap();
-    match tasks.get(&*id) {
+    match tasks.get(id.as_str()) {
         Some(task) => HttpResponse::Ok().json(task),
         None => HttpResponse::NotFound().body("Task not found"),
     }
